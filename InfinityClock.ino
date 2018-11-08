@@ -19,7 +19,7 @@
   GA1A1S202WP Analog light sensor
   
   ****************************************************/
-//#define DEBUG
+// #define DEBUG  /*  uncomment to get debug output  */
 
 #include "Adafruit_TLC5947.h"
 #include <Wire.h>
@@ -30,7 +30,10 @@
 // How many boards do you have chained?
 #define NUM_TLC5974 2
 #define MAX_LIGHT 12
-#define R_MAX_LIGHT 11  // one less than MAX_LIGHT for reverse loop
+#define R_MAX_LIGHT 11    // one less than MAX_LIGHT for reverse loop
+
+#define MAX_COLOR 4095  //  Maximum value for color intensity
+#define MIN_FACTOR 0.05   //  Minimum factor for dimming MAX_COLOR
 
 #define data   4
 #define clock   5
@@ -44,11 +47,11 @@ Adafruit_TLC5947 tlc = Adafruit_TLC5947(NUM_TLC5974, clock, data, latch);
 
 uint8_t globalHourLight;
 uint8_t globalMinuteLight;
+uint8_t globalMinuteAltLight;
 
 RTC_PCF8523 rtc;
 
 uint16_t maxColor;
-uint16_t maxColorHalf;
 float dimFactor;
 
 #define RWIPE 0
@@ -57,12 +60,22 @@ float dimFactor;
 #define GWIPECCW 3
 #define BWIPE 4
 #define BWIPECCW 5
-#define FADE1 6
-#define FADE2 7
-#define FADE3 8
-#define WHEEL 9
-uint8_t backgroundMax = 9;
-uint8_t background = 0;
+#define YFADE 6
+#define AFADE 7
+#define MFADE 8
+#define RFADE 9
+#define GFADE 10
+#define BFADE 11
+#define WHEEL1 12
+#define WHEEL2 13
+#define WHEEL3 14
+#define WHEEL4 15
+#define BACKGROUND_MAX 16
+
+#define WIPE_DELAY_MIN 3000   /*  Min and Max delay after doing a "wipe" */
+#define WIPE_DELAY_MAX 6000
+#define FADE_DELAY 1
+#define FADE_STEP 80
 
 #define bounceInterval 20 //ms bounce interval for switch debouncing
 
@@ -92,11 +105,7 @@ uint16_t lightArray[12][3]; // [0 - 11 hours][ red green blue ]
 
 void timeSet() {
 //  request = TIME_SET;
-  if (request_t) {
-    request_t = false;
-  } else {
     request_t = true;
-  }
 }
 
 
@@ -127,7 +136,7 @@ void setup() {
   bouncedButtonHour.interval(bounceInterval);
 
   pinMode(buttonTimeSet, INPUT);
-  attachInterrupt(buttonTimeSet, timeSet, FALLING);
+  attachInterrupt(buttonTimeSet, timeSet, RISING);
   request_t = false;
   
   pinMode(seedSource, INPUT);
@@ -148,20 +157,20 @@ void setup() {
 
   maxColor = 4096;
   for(uint8_t i=0; i<MAX_LIGHT; i++) {
-    tlc.setLED(i, maxColor, 0, 0);    // Red test
+    tlc.setLED(i, MAX_COLOR, 0, 0);    // Red test
     tlc.write();
   }
-  delay(5000);
+  delay(4000);
   for(uint8_t i=0; i<MAX_LIGHT; i++) {
-    tlc.setLED(i, 0, maxColor, 0);    // Green test
+    tlc.setLED(i, 0, MAX_COLOR, 0);    // Green test
     tlc.write();
   }
-  delay(5000);
+  delay(4000);
   for(uint8_t i=0; i<MAX_LIGHT; i++) {
-    tlc.setLED(i, 0, 0, maxColor);    // Blue test
+    tlc.setLED(i, 0, 0, MAX_COLOR);    // Blue test
     tlc.write();
   }
-  delay(5000);
+  delay(4000);
 }
 
 /********************************/
@@ -172,12 +181,13 @@ void setup() {
 
 void loop() {
   
-  int rawValue = analogRead(lightSensorPin);    
-  dimFactor = (float) rawValue/1024.0;
-  maxColor = 4096.0 * dimFactor;
-  maxColorHalf = maxColor / 3;
-  maxColor = max(maxColor, 1000);
-  
+  int rawValue = analogRead(lightSensorPin);
+  /*  calculate dimming factor based on light sensor, and truncate to a range of 0.3 to 1.0  */    
+  dimFactor = (float) rawValue/512.0;
+  if (dimFactor > 1.0) dimFactor = 1.0;
+  if (dimFactor < MIN_FACTOR) dimFactor = MIN_FACTOR;
+  maxColor = MAX_COLOR * dimFactor;
+    
   #ifdef DEBUG
     Serial.print("light sensor raw = ");
     Serial.print(rawValue);
@@ -195,36 +205,49 @@ void loop() {
 }
 
 void doBackground(void) {
-  background = random(backgroundMax);
+  uint8_t background = random(BACKGROUND_MAX);
+  uint16_t wipeDelay = random(WIPE_DELAY_MIN, WIPE_DELAY_MAX);
   switch (background) {
     case RWIPE:
-      colorWipe(maxColor, 0, 0, 500, wipeClockWise); // "Red" (depending on your LED wiring)
+      colorWipe(maxColor, 0, 0, wipeDelay, wipeClockWise); // "Red" (depending on your LED wiring)
       break;
     case RWIPECCW:
-      colorWipe(maxColor, 0, 0, 500, wipeCounterClockWise); // "Red" (depending on your LED wiring)
+      colorWipe(maxColor, 0, 0, wipeDelay, wipeCounterClockWise); // "Red" (depending on your LED wiring)
       break;
     case GWIPE:
-      colorWipe(0, maxColor, 0, 500, wipeClockWise); // "Green" (depending on your LED wiring)
+      colorWipe(0, maxColor, 0, wipeDelay, wipeClockWise); // "Green" (depending on your LED wiring)
       break;
     case GWIPECCW:
-      colorWipe(0, maxColor, 0, 500, wipeCounterClockWise); // "Green" (depending on your LED wiring)
+      colorWipe(0, maxColor, 0, wipeDelay, wipeCounterClockWise); // "Green" (depending on your LED wiring)
       break;
     case BWIPE:
-      colorWipe(0, 0, maxColor, 500, wipeClockWise); // "Blue" (depending on your LED wiring)
+      colorWipe(0, 0, maxColor, wipeDelay, wipeClockWise); // "Blue" (depending on your LED wiring)
       break;
     case BWIPECCW:
-      colorWipe(0, 0, maxColor, 500, wipeCounterClockWise); // "Blue" (depending on your LED wiring)
+      colorWipe(0, 0, maxColor, wipeDelay, wipeCounterClockWise); // "Blue" (depending on your LED wiring)
       break;
-    case FADE1:
-      colorFade(maxColor/2, maxColor/2, 0, 50); // "Red" (depending on your LED wiring)
+    case YFADE:
+      colorFade(maxColor/2, maxColor/2, 0); // "Yellowish" (depending on your LED wiring)
       break;
-    case FADE2:
-      colorFade(0, maxColor/2, maxColor/2, 50); // "Red" (depending on your LED wiring)
+    case AFADE:
+      colorFade(0, maxColor/2, maxColor/2); // "Aqua" (depending on your LED wiring)
       break;
-    case FADE3:
-      colorFade(maxColor/2, 0, maxColor/2, 50); // "Red" (depending on your LED wiring)
+    case MFADE:
+      colorFade(maxColor/2, 0, maxColor/2); // "Magenta" (depending on your LED wiring)
       break;
-    case WHEEL:
+    case RFADE:
+      colorFade(maxColor, 0, 0); // "Red" (depending on your LED wiring)
+      break;
+    case GFADE:
+      colorFade(0, maxColor, 0); // "Green" (depending on your LED wiring)
+      break;
+    case BFADE:
+      colorFade(0, 0, maxColor); // "Blue" (depending on your LED wiring)
+      break;
+    case WHEEL1:   /*  do WHEEL more often */
+    case WHEEL2:
+    case WHEEL3:
+    case WHEEL4:
       rainbowCycle(10);
       break;
   }
@@ -278,16 +301,16 @@ void colorWipe(uint16_t r, uint16_t g, uint16_t b, uint8_t wait, boolean wipeDir
     */ 
   }
 }
-// Fill the dots one after the other with a color
-void colorFade(uint16_t r, uint16_t g, uint16_t b, uint8_t wait) {
-  uint16_t rinc = r/20;
-  uint16_t ginc = g/20;
-  uint16_t binc = b/20;
+// Fade a color in and back out
+void colorFade(uint16_t r, uint16_t g, uint16_t b) {
+  uint16_t rinc = r/FADE_STEP;
+  uint16_t ginc = g/FADE_STEP;
+  uint16_t binc = b/FADE_STEP;
   uint16_t rsub = 0;
   uint16_t gsub = 0;
   uint16_t bsub = 0;
   
-  for (uint8_t j=0; j<20; j++) {
+  for (uint8_t j=0; j<FADE_STEP; j++) {
     for(uint8_t i=0; i<MAX_LIGHT; i++) {
       if ((i != globalHourLight) && (i != globalMinuteLight)) {
         tlc.setLED(i, rsub, gsub, bsub);
@@ -298,13 +321,12 @@ void colorFade(uint16_t r, uint16_t g, uint16_t b, uint8_t wait) {
       lightTime();
       tlc.write();
       if (request_t) break;
-      delay(wait);
     }
     rsub = rsub +rinc;
     gsub = gsub + ginc;
     bsub = bsub + binc;
   }
-  for (uint8_t j=0; j<19; j++) {
+  for (uint8_t j=0; j<FADE_STEP-1; j++) {
     for(uint8_t i=0; i<MAX_LIGHT; i++) {
       if ((i != globalHourLight) && (i != globalMinuteLight)) {
         tlc.setLED(i, rsub, gsub, bsub);
@@ -315,7 +337,6 @@ void colorFade(uint16_t r, uint16_t g, uint16_t b, uint8_t wait) {
       lightTime();
       tlc.write();
       if (request_t) break;
-      delay(wait);
     }
     rsub = rsub - rinc;
     gsub = gsub - ginc;
@@ -341,16 +362,14 @@ void rainbowCycle(uint8_t wait) {
     Serial.println ("rainbowCycle **********");
   #endif
 
-  for(j=0; j<4096; j++) { // 1 cycle of all colors on wheel
+  for(j=0; j<4096; j += 6) { // cycle through colors on wheel
     #ifdef DEBUG
       Serial.print ("j = ");
       Serial.println (j);
     #endif
     for(i=0; i< MAX_LIGHT; i++) {
-//    for(i=0; i< 8*NUM_TLC5974; i++) {
       if ((i != globalHourLight) && (i != globalMinuteLight)) {
         Wheel(i, ((i * 4096 / (MAX_LIGHT)) + j) & 4095);
-//        Wheel(i, ((i * 4096 / (8*NUM_TLC5974)) + j) & 4096);
       }
       if (request_t) break;
     }
@@ -442,6 +461,7 @@ void incTime (void)
   lightMinute (mm, ss);
   tlc.write();
   rtc.adjust(DateTime(yr, mth, dy, hh, mm, ss));
+  if (! digitalRead(buttonTimeSet)) request_t = false;
 }
 
 void lightTime(void) {
@@ -457,65 +477,41 @@ void lightHour (uint8_t lit_hour, uint8_t lit_sec) {
   if (lit_hour > 11) {
     lit_hour = lit_hour - 12;
   }
-//  if ((lit_hour != globalMinuteLight) || (lit_sec % 2))  {
      tlc.setLED(lit_hour,maxColor,maxColor,maxColor);
-//  }
   globalHourLight = lit_hour;
-  /*
-  #ifdef DEBUG
-    Serial.println("lightHour called");
-  #endif
-  */
 }
 
+/*     
+ *   Routine to light minute LED, and seemlessly move from on to the next 
+ *   
+ *  
+ */
 void lightMinute (uint8_t lit_min, uint8_t lit_sec) {
   uint16_t min_fract = lit_min % 5;
   int this_min = lit_min / 5;
-  int this_sec = lit_sec % 5;
-  globalMinuteLight = this_min;
-  if (! min_fract ) {
-    tlc.setLED(this_min,maxColor,0,0); 
+  
+  globalMinuteLight = this_min;    
+  if (min_fract > 2) {
+    if (lit_sec > 29) {
+      int next_min = this_min + 1;
+      if (next_min == 12) next_min = 0;
+      globalMinuteLight = next_min;
+    }
   }
-  else {
-    if (timeSwap[min_fract-1][this_sec] == 1) {
-      tlc.setLED(this_min,maxColor,0,0); 
-    } else {
-      uint8_t this_min_next = this_min + 1;
-      if (this_min_next > 11) { this_min_next = 0; }
-      tlc.setLED(this_min_next,maxColor,0,0);      
-      globalMinuteLight = this_min_next;
-    }
-    /*
-    uint16_t low_light;
-    uint16_t high_light = (maxColor * min_fract ) /5;
-    uint8_t lit_min_next = this_min + 1;
-    if (high_light > maxColor) {
-      low_light = maxColor;
-    } else {
-      low_light = maxColor - high_light;
-    }
-    if (lit_min_next > 11) { lit_min_next = 0; }
-    tlc.setLED(this_min,0,0,low_light); 
-    */
-    /*
-    #ifdef DEBUG
-    if (lit_sec != lastMinute) {
-      Serial.print("lit_min = ");
-      Serial.print(lit_min);
-      Serial.print("lit_sec = ");
-      Serial.print(lit_sec);
-      Serial.print("  fract = ");
-      Serial.print(min_fract);
-      Serial.print("  this_sec = ");
-      Serial.print(this_sec);
-      Serial.print("  early light = ");
-      Serial.println(timeSwap[min_fract-1][this_sec]);
-      //Serial.println(digitalRead(buttonTimeSet));
-      lastMinute = lit_sec;   
-    }
-    #endif
-    */
-  }
+  if (globalHourLight != globalMinuteLight) tlc.setLED(globalMinuteLight,maxColor,0,0); 
+
+  #ifdef DEBUG
+  if (lit_sec != lastMinute) {
+    Serial.print("lit_min = ");
+    Serial.print(lit_min);
+    Serial.print("  min_fract = ");
+    Serial.print(min_fract);
+    Serial.print("  globalMinuteLight = ");
+    Serial.println(globalMinuteLight);
+    //Serial.println(digitalRead(buttonTimeSet));
+    lastMinute = lit_sec; 
+  }  
+  #endif
 }
 
 
